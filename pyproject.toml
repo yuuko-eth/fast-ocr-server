@@ -1,0 +1,26 @@
+[project]
+name = "fast-ocr-server"
+version = "0.1.11"
+description = "A minimal FastAPI server wrapping PaddleOCR (v3.x)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "paddleocr==3.0.2",
+  "paddlex",
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+  "pillow>=10.0",
+  "python-multipart",
+  "setuptools",
+]
+
+[project.optional-dependencies]
+dev = ["httpx>=0.27", "pytest>=8.0"]
+
+[tool.uv]
+# nothing special needed; uv will use [project] dependencies
+
+[project.scripts]
+# Handy CLI alias if you like: `uv run fast-ocr-server`
+fast-ocr-server = "app.main:cli"
+
