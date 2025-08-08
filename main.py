@@ -56,6 +56,11 @@ def _load_models() -> None:
         use_doc_orientation_classify=USE_DOC_ORIENTATION_CLASSIFY,
         use_doc_unwarping=USE_DOC_UNWARPING,
         use_textline_orientation=USE_TEXTLINE_ORIENTATION,
+        
+        # rec_batch_num: default 6. if accuracy drops, lower the number
+        # see: http://www.paddleocr.ai/main/FAQ.html#q_36
+
+        # rec_batch_num=1,
     )
     # NOTE: First call will trigger model downloads if missing; allow time.
 
