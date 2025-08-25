@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import logging
 from typing import List, Dict, Any, Optional
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -10,6 +11,17 @@ from pydantic import BaseModel
 from paddleocr import PaddleOCR
 from PIL import Image
 import numpy as np
+
+# GPU monitoring imports
+# Install with: pip install pynvml
+try:
+    import pynvml
+    GPU_MONITORING_AVAILABLE = True
+except ImportError:
+    pynvml = None
+    GPU_MONITORING_AVAILABLE = False
+
+logging.basicConfig(level=logging.INFO)
 
 # ------------------------------------------------------------
 # Config
@@ -52,6 +64,23 @@ class OCRResponse(BaseModel):
     textline_orientation_angles: List[float]
 
 
+class GPUInfo(BaseModel):
+    gpu_id: int
+    name: str
+    temperature: float  # Celsius
+    memory_used: int    # MB
+    memory_total: int   # MB
+    memory_percent: float
+    power_draw: Optional[float] = None  # Watts
+    utilization: Optional[float] = None  # Percentage
+
+
+class SystemStatus(BaseModel):
+    status: str
+    gpu_available: bool
+    gpus: List[GPUInfo] = []
+
+
 def _bytes_to_numpy_image(data: bytes) -> np.ndarray:
     try:
         img = Image.open(io.BytesIO(data)).convert("RGB")
@@ -60,9 +89,95 @@ def _bytes_to_numpy_image(data: bytes) -> np.ndarray:
         raise HTTPException(status_code=400, detail=f"Could not decode image: {e}") from e
 
 
+def _get_gpu_info() -> List[GPUInfo]:
+    """Get GPU temperature and stats using pynvml"""
+    if not GPU_MONITORING_AVAILABLE:
+        return []
+    
+    try:
+        pynvml.nvmlInit()
+        gpu_count = pynvml.nvmlDeviceGetCount()
+        gpus = []
+        
+        for i in range(gpu_count):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+            name = pynvml.nvmlDeviceGetName(handle).decode('utf-8')
+            
+            # Temperature
+            try:
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+            except:
+                temp = -1
+            
+            # Memory info
+            try:
+                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                mem_used = mem_info.used // (1024 * 1024)  # Convert to MB
+                mem_total = mem_info.total // (1024 * 1024)
+                mem_percent = (mem_info.used / mem_info.total) * 100
+            except:
+                mem_used = mem_total = mem_percent = 0
+            
+            # Power draw (optional - not all GPUs support this)
+            try:
+                power_draw = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0  # Convert to Watts
+            except:
+                power_draw = None
+            
+            # GPU utilization (optional)
+            try:
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                utilization = util.gpu
+            except:
+                utilization = None
+            
+            gpus.append(GPUInfo(
+                gpu_id=i,
+                name=name,
+                temperature=temp,
+                memory_used=mem_used,
+                memory_total=mem_total,
+                memory_percent=mem_percent,
+                power_draw=power_draw,
+                utilization=utilization
+            ))
+        
+        return gpus
+    except Exception as e:
+        logging.error(f"Failed to get GPU info: {e}")
+        return []
+
+
+def _check_gpu_temperature() -> None:
+    """Log warning if GPU temperature is too high"""
+    gpus = _get_gpu_info()
+    for gpu in gpus:
+        if gpu.temperature > 80:  # 80°C threshold
+            logging.warning(f"GPU {gpu.gpu_id} ({gpu.name}) temperature HIGH: {gpu.temperature}°C")
+        elif gpu.temperature > 85:  # 85°C critical
+            logging.error(f"GPU {gpu.gpu_id} ({gpu.name}) temperature CRITICAL: {gpu.temperature}°C")
+
+
 @app.on_event("startup")
 def _load_models() -> None:
     global ocr
+    
+    # Initialize GPU monitoring if available
+    if GPU_MONITORING_AVAILABLE:
+        try:
+            pynvml.nvmlInit()
+            gpu_count = pynvml.nvmlDeviceGetCount()
+            logging.info(f"GPU monitoring initialized. Found {gpu_count} GPU(s)")
+            
+            # Log initial GPU temps
+            gpus = _get_gpu_info()
+            for gpu in gpus:
+                logging.info(f"GPU {gpu.gpu_id}: {gpu.name} - {gpu.temperature}°C")
+        except Exception as e:
+            logging.warning(f"GPU monitoring failed to initialize: {e}")
+    else:
+        logging.info("GPU monitoring not available (pynvml not installed)")
+    
     # Mirror your REPL init exactly (v3.0+ flags you shared)
     ocr = PaddleOCR(
         lang=LANG,
@@ -76,11 +191,50 @@ def _load_models() -> None:
         # rec_batch_num=1,
     )
     # NOTE: First call will trigger model downloads if missing; allow time.
+    logging.info("PaddleOCR initialized successfully")
 
 
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/status")
+def system_status() -> SystemStatus:
+    """Enhanced status with GPU monitoring"""
+    gpus = _get_gpu_info()
+    return SystemStatus(
+        status="ok",
+        gpu_available=GPU_MONITORING_AVAILABLE and len(gpus) > 0,
+        gpus=gpus
+    )
+
+
+@app.get("/gpu")
+def gpu_status() -> Dict[str, Any]:
+    """Dedicated GPU monitoring endpoint"""
+    if not GPU_MONITORING_AVAILABLE:
+        return {
+            "available": False,
+            "error": "GPU monitoring not available. Install: pip install pynvml"
+        }
+    
+    gpus = _get_gpu_info()
+    
+    # Check for temperature warnings
+    warnings = []
+    for gpu in gpus:
+        if gpu.temperature > 80:
+            warnings.append(f"GPU {gpu.gpu_id} temperature high: {gpu.temperature}°C")
+        if gpu.memory_percent > 90:
+            warnings.append(f"GPU {gpu.gpu_id} memory usage high: {gpu.memory_percent:.1f}%")
+    
+    return {
+        "available": True,
+        "gpu_count": len(gpus),
+        "gpus": [gpu.model_dump() for gpu in gpus],
+        "warnings": warnings
+    }
 
 
 @app.post("/ocr")
@@ -93,11 +247,17 @@ async def run_ocr(file: UploadFile = File(...)) -> Any:
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload.")
 
+    # Check GPU temperature before processing
+    _check_gpu_temperature()
+
     img = _bytes_to_numpy_image(data)
 
     # PaddleOCR v3+ predict method
     assert ocr is not None
     results = ocr.predict(input=img)
+    
+    # Check GPU temperature after processing
+    _check_gpu_temperature()
     
     # Parse the new format
     if not results or len(results) == 0:
@@ -164,10 +324,16 @@ async def run_ocr_raw(file: UploadFile = File(...)) -> Any:
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload.")
 
+    # Check GPU temperature before processing
+    _check_gpu_temperature()
+
     img = _bytes_to_numpy_image(data)
     
     assert ocr is not None
     results = ocr.predict(input=img)
+    
+    # Check GPU temperature after processing
+    _check_gpu_temperature()
     
     return JSONResponse(content=results)
 
