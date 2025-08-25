@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from paddleocr import PaddleOCR
 from PIL import Image
@@ -37,6 +38,7 @@ ocr: PaddleOCR | None = None
 
 app = FastAPI(title="fast-ocr-server", version="0.1.0")
 
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
 class OCRItem(BaseModel):
     text: str
@@ -101,7 +103,7 @@ def _get_gpu_info() -> List[GPUInfo]:
         
         for i in range(gpu_count):
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            name = pynvml.nvmlDeviceGetName(handle).decode('utf-8')
+            name = pynvml.nvmlDeviceGetName(handle)
             
             # Temperature
             try:
