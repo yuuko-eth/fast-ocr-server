@@ -58,7 +58,3 @@ temperature warnings logged at 80°C. GPU memory usage tracked per request.
 default lang: Chinese. Change `OCR_LANG` for other languages. may output simplified due to language model component. convert if needed
 
 raw endpoint exists because the structured parsing might break with model updates. use accordingly.
-
-## license
-
-apache 2.0
