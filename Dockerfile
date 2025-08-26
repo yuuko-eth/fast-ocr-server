@@ -44,7 +44,7 @@ USER appuser
 
 ENV PATH="/app/.venv/bin/:${PATH}"
 
-HEALTHCHECK --interval=30s --timeout=10s \
-  CMD curl -f http://localhost:80/health || exit 1
+#HEALTHCHECK --interval=30s --timeout=10s \
+#  CMD curl -f http://localhost:80/health || exit 1
 
 CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "80"]
