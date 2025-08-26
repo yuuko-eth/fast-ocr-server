@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import io
 import os
 import logging
@@ -160,8 +162,8 @@ def _check_gpu_temperature() -> None:
             logging.error(f"GPU {gpu.gpu_id} ({gpu.name}) temperature CRITICAL: {gpu.temperature}°C")
 
 
-@app.on_event("startup")
-def _load_models() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global ocr
     
     # Initialize GPU monitoring if available
@@ -194,6 +196,10 @@ def _load_models() -> None:
     )
     # NOTE: First call will trigger model downloads if missing; allow time.
     logging.info("PaddleOCR initialized successfully")
+
+    yield
+
+    print("Shutting down...")
 
 
 @app.get("/health")
