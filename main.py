@@ -38,7 +38,45 @@ USE_TEXTLINE_ORIENTATION = os.getenv("OCR_USE_TEXTLINE_ORIENTATION", "true").low
 # Single global OCR instance (heavyweight) – initialized at startup.
 ocr: PaddleOCR | None = None
 
-app = FastAPI(title="fast-ocr-server", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global ocr
+    
+    # Initialize GPU monitoring if available
+    if GPU_MONITORING_AVAILABLE:
+        try:
+            pynvml.nvmlInit()
+            gpu_count = pynvml.nvmlDeviceGetCount()
+            logging.info(f"GPU monitoring initialized. Found {gpu_count} GPU(s)")
+            
+            # Log initial GPU temps
+            gpus = _get_gpu_info()
+            for gpu in gpus:
+                logging.info(f"GPU {gpu.gpu_id}: {gpu.name} - {gpu.temperature}°C")
+        except Exception as e:
+            logging.warning(f"GPU monitoring failed to initialize: {e}")
+    else:
+        logging.info("GPU monitoring not available (pynvml not installed)")
+    
+    # Mirror your REPL init exactly (v3.0+ flags you shared)
+    ocr = PaddleOCR(
+        lang=LANG,
+        use_doc_orientation_classify=USE_DOC_ORIENTATION_CLASSIFY,
+        use_doc_unwarping=USE_DOC_UNWARPING,
+        use_textline_orientation=USE_TEXTLINE_ORIENTATION,
+        
+        # rec_batch_num: default 6. if accuracy drops, lower the number
+        # see: http://www.paddleocr.ai/main/FAQ.html#q_36
+
+        # rec_batch_num=1,
+    )
+    # NOTE: First call will trigger model downloads if missing; allow time.
+    logging.info("PaddleOCR initialized successfully")
+
+    yield
+
+    print("Shutting down...")
+app = FastAPI(title="fast-ocr-server", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
@@ -162,44 +200,6 @@ def _check_gpu_temperature() -> None:
             logging.error(f"GPU {gpu.gpu_id} ({gpu.name}) temperature CRITICAL: {gpu.temperature}°C")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global ocr
-    
-    # Initialize GPU monitoring if available
-    if GPU_MONITORING_AVAILABLE:
-        try:
-            pynvml.nvmlInit()
-            gpu_count = pynvml.nvmlDeviceGetCount()
-            logging.info(f"GPU monitoring initialized. Found {gpu_count} GPU(s)")
-            
-            # Log initial GPU temps
-            gpus = _get_gpu_info()
-            for gpu in gpus:
-                logging.info(f"GPU {gpu.gpu_id}: {gpu.name} - {gpu.temperature}°C")
-        except Exception as e:
-            logging.warning(f"GPU monitoring failed to initialize: {e}")
-    else:
-        logging.info("GPU monitoring not available (pynvml not installed)")
-    
-    # Mirror your REPL init exactly (v3.0+ flags you shared)
-    ocr = PaddleOCR(
-        lang=LANG,
-        use_doc_orientation_classify=USE_DOC_ORIENTATION_CLASSIFY,
-        use_doc_unwarping=USE_DOC_UNWARPING,
-        use_textline_orientation=USE_TEXTLINE_ORIENTATION,
-        
-        # rec_batch_num: default 6. if accuracy drops, lower the number
-        # see: http://www.paddleocr.ai/main/FAQ.html#q_36
-
-        # rec_batch_num=1,
-    )
-    # NOTE: First call will trigger model downloads if missing; allow time.
-    logging.info("PaddleOCR initialized successfully")
-
-    yield
-
-    print("Shutting down...")
 
 
 @app.get("/health")
