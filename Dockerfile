@@ -8,14 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 
 RUN groupadd -r appuser && useradd -r -g appuser -u 1000 appuser
 
-# Download the latest installer
-ADD https://astral.sh/uv/install.sh /uv-installer.sh
-
-# Run the installer then remove it
-RUN sh /uv-installer.sh && rm /uv-installer.sh
-
-# Ensure the installed binary is on the `PATH`
-ENV PATH="/root/.local/bin/:$PATH"
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
@@ -42,7 +35,7 @@ COPY --chown=appuser:appuser . .
 
 USER appuser
 
-ENV PATH="/app/.venv/bin/:${PATH}"
+ENV PATH="/home/appuser/.local/bin:/app/.venv/bin/:${PATH}"
 
 HEALTHCHECK --interval=30s --timeout=10s \
   CMD curl -f http://localhost:80/health || exit 1
