@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+import asyncio
 import io
 import os
 import logging
@@ -34,6 +35,8 @@ LANG = os.getenv("OCR_LANG", "chinese_cht")
 USE_DOC_ORIENTATION_CLASSIFY = os.getenv("OCR_USE_DOC_ORIENTATION_CLASSIFY", "true").lower() == "true"
 USE_DOC_UNWARPING = os.getenv("OCR_USE_DOC_UNWARPING", "false").lower() == "true"
 USE_TEXTLINE_ORIENTATION = os.getenv("OCR_USE_TEXTLINE_ORIENTATION", "true").lower() == "true"
+MAX_UPLOAD_BYTES = int(os.getenv("OCR_MAX_UPLOAD_MB", "20")) * 1024 * 1024
+OCR_TIMEOUT = int(os.getenv("OCR_TIMEOUT_SECONDS", "60"))
 
 # Single global OCR instance (heavyweight) – initialized at startup.
 ocr: PaddleOCR | None = None
@@ -78,7 +81,12 @@ async def lifespan(app: FastAPI):
     print("Shutting down...")
 app = FastAPI(title="fast-ocr-server", version="0.1.0", lifespan=lifespan)
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class OCRItem(BaseModel):
     text: str
@@ -194,10 +202,10 @@ def _check_gpu_temperature() -> None:
     """Log warning if GPU temperature is too high"""
     gpus = _get_gpu_info()
     for gpu in gpus:
-        if gpu.temperature > 80:  # 80°C threshold
-            logging.warning(f"GPU {gpu.gpu_id} ({gpu.name}) temperature HIGH: {gpu.temperature}°C")
-        elif gpu.temperature > 85:  # 85°C critical
+        if gpu.temperature > 85:  # 85°C critical
             logging.error(f"GPU {gpu.gpu_id} ({gpu.name}) temperature CRITICAL: {gpu.temperature}°C")
+        elif gpu.temperature > 80:  # 80°C threshold
+            logging.warning(f"GPU {gpu.gpu_id} ({gpu.name}) temperature HIGH: {gpu.temperature}°C")
 
 
 
@@ -205,6 +213,13 @@ def _check_gpu_temperature() -> None:
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness() -> Dict[str, str]:
+    if ocr is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet.")
+    return {"status": "ready"}
 
 
 @app.get("/status")
@@ -254,19 +269,30 @@ async def run_ocr(file: UploadFile = File(...)) -> Any:
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large.")
+
+    if ocr is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet.")
 
     # Check GPU temperature before processing
     _check_gpu_temperature()
 
     img = _bytes_to_numpy_image(data)
 
-    # PaddleOCR v3+ predict method
-    assert ocr is not None
-    results = ocr.predict(input=img)
-    
+    # PaddleOCR v3+ predict method — run in thread pool to avoid blocking the event loop
+    loop = asyncio.get_event_loop()
+    try:
+        results = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: ocr.predict(input=img)),
+            timeout=OCR_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="OCR processing timed out.")
+
     # Check GPU temperature after processing
     _check_gpu_temperature()
-    
+
     # Parse the new format
     if not results or len(results) == 0:
         return JSONResponse(content=OCRResponse(
@@ -331,18 +357,29 @@ async def run_ocr_raw(file: UploadFile = File(...)) -> Any:
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large.")
+
+    if ocr is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet.")
 
     # Check GPU temperature before processing
     _check_gpu_temperature()
 
     img = _bytes_to_numpy_image(data)
-    
-    assert ocr is not None
-    results = ocr.predict(input=img)
-    
+
+    loop = asyncio.get_event_loop()
+    try:
+        results = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: ocr.predict(input=img)),
+            timeout=OCR_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="OCR processing timed out.")
+
     # Check GPU temperature after processing
     _check_gpu_temperature()
-    
+
     return JSONResponse(content=results)
 
 
